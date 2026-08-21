@@ -18,7 +18,7 @@ app.get("/", (req, res) => {
 io.on("connection", (socket) => {
   console.log("Usuário conectado:", socket.id);
 
-  socket.on("chatMessage", (message) => {
+  socket.on("chat message", (message) => {
     // Envia a mensagem para TODOS os usuários conectados
     io.emit("chatMessage", {
       id: socket.id,
