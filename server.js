@@ -7,108 +7,109 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
     cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    },
-
-    // Configuração leve para conexões móveis
-    transports: ["websocket", "polling"]
+        origin: "*"
+    }
 });
 
-// ======================================================
-// CONFIGURAÇÕES
-// ======================================================
+const players = new Map();
 
 const MAX_PLAYERS = 32;
 
-// Limite aproximado de atualizações de posição por segundo
-const POSITION_INTERVAL = 60;
-
-// Guarda os jogadores conectados
-const players = new Map();
-
-// ======================================================
-// ROTA PRINCIPAL
-// ======================================================
-
 app.get("/", (req, res) => {
-    res.send("Servidor Multiplayer + Chat Global funcionando!");
+    res.send("Servidor Multiplayer + Chat funcionando!");
 });
 
-// ======================================================
-// FUNÇÃO PARA ENVIAR LISTA DE JOGADORES
-// ======================================================
+function number(value) {
+    const n = Number(value);
 
-function getPlayers() {
-    const result = {};
-
-    for (const [id, player] of players) {
-        result[id] = player;
+    if (!Number.isFinite(n)) {
+        return 0;
     }
 
-    return result;
+    return n;
 }
-
-// ======================================================
-// SOCKET.IO
-// ======================================================
 
 io.on("connection", (socket) => {
 
-    console.log("Usuário conectado:", socket.id);
-
-    // --------------------------------------------------
-    // LIMITE DE JOGADORES
-    // --------------------------------------------------
+    console.log("Jogador conectado:", socket.id);
 
     if (players.size >= MAX_PLAYERS) {
-
-        socket.emit("serverFull", {
-            message: "Servidor cheio."
-        });
-
+        socket.emit("serverFull");
         socket.disconnect(true);
-
         return;
     }
 
-    // --------------------------------------------------
-    // CRIA JOGADOR
-    // --------------------------------------------------
-
-    players.set(socket.id, {
+    const player = {
         id: socket.id,
-
         x: 0,
         y: 0,
         z: 0,
+        yaw: 0
+    };
 
-        rotY: 0,
+    players.set(socket.id, player);
 
-        connectedAt: Date.now()
+    // Envia os jogadores que já estavam no servidor
+    const existingPlayers = {};
+
+    players.forEach((p, id) => {
+
+        if (id === socket.id) {
+            return;
+        }
+
+        existingPlayers[id] = {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            yaw: p.yaw
+        };
     });
 
-    // --------------------------------------------------
-    // ENVIA ESTADO ATUAL PARA O NOVO JOGADOR
-    // --------------------------------------------------
+    socket.emit("players", existingPlayers);
 
-    socket.emit("players", getPlayers());
-
-    // --------------------------------------------------
-    // AVISA OS OUTROS JOGADORES
-    // --------------------------------------------------
-
+    // Avisa os outros jogadores que entrou alguém
     socket.broadcast.emit("playerJoined", {
         id: socket.id,
         x: 0,
         y: 0,
         z: 0,
-        rotY: 0
+        yaw: 0
     });
 
-    // ==================================================
-    // CHAT GLOBAL
-    // ==================================================
+    // =================================================
+    // MULTIPLAYER
+    // =================================================
+
+    socket.on("playerMove", (data) => {
+
+        if (!data || typeof data !== "object") {
+            return;
+        }
+
+        const p = players.get(socket.id);
+
+        if (!p) {
+            return;
+        }
+
+        p.x = number(data.x);
+        p.y = number(data.y);
+        p.z = number(data.z);
+        p.yaw = number(data.yaw);
+
+        socket.broadcast.emit("playerMove", {
+            id: socket.id,
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            yaw: p.yaw
+        });
+    });
+
+    // =================================================
+    // CHAT
+    // =================================================
 
     socket.on("chatMessage", (message) => {
 
@@ -118,25 +119,19 @@ io.on("connection", (socket) => {
 
         message = message.trim();
 
-        if (!message) {
+        if (message.length === 0) {
             return;
         }
 
-        // Limita o tamanho da mensagem
-        if (message.length > 200) {
-            message = message.substring(0, 200);
-        }
+        message = message.substring(0, 200);
 
-        // Envia para TODOS
         io.emit("chatMessage", {
             id: socket.id,
             message: message
         });
-
     });
 
-    // Também aceita o nome de evento usado
-    // pela versão anterior do HTML.
+    // Compatibilidade com o chat antigo
     socket.on("chat message", (message) => {
 
         if (typeof message !== "string") {
@@ -145,134 +140,48 @@ io.on("connection", (socket) => {
 
         message = message.trim();
 
-        if (!message) {
+        if (message.length === 0) {
             return;
         }
 
-        if (message.length > 200) {
-            message = message.substring(0, 200);
-        }
+        message = message.substring(0, 200);
 
         io.emit("chatMessage", {
             id: socket.id,
             message: message
         });
-
     });
 
-    // ==================================================
-    // MOVIMENTO DO JOGADOR
-    // ==================================================
-
-    let lastPositionUpdate = 0;
-
-    socket.on("playerMove", (data) => {
-
-        const now = Date.now();
-
-        // Evita spam excessivo de pacotes
-        if (now - lastPositionUpdate < POSITION_INTERVAL) {
-            return;
-        }
-
-        lastPositionUpdate = now;
-
-        const player = players.get(socket.id);
-
-        if (!player) {
-            return;
-        }
-
-        if (!data || typeof data !== "object") {
-            return;
-        }
-
-        // ------------------------------------------------
-        // VALIDAÇÃO
-        // ------------------------------------------------
-
-        const x = Number(data.x);
-        const y = Number(data.y);
-        const z = Number(data.z);
-        const rotY = Number(data.rotY);
-
-        if (
-            !Number.isFinite(x) ||
-            !Number.isFinite(y) ||
-            !Number.isFinite(z) ||
-            !Number.isFinite(rotY)
-        ) {
-            return;
-        }
-
-        // Evita valores absurdamente grandes
-        if (
-            Math.abs(x) > 1000000 ||
-            Math.abs(y) > 1000000 ||
-            Math.abs(z) > 1000000
-        ) {
-            return;
-        }
-
-        // ------------------------------------------------
-        // ATUALIZA ESTADO
-        // ------------------------------------------------
-
-        player.x = x;
-        player.y = y;
-        player.z = z;
-        player.rotY = rotY;
-
-        // ------------------------------------------------
-        // ENVIA SOMENTE PARA OS OUTROS
-        // ------------------------------------------------
-
-        socket.broadcast.emit("playerMove", {
-            id: socket.id,
-
-            x: x,
-            y: y,
-            z: z,
-
-            rotY: rotY
-        });
-
-    });
-
-    // ==================================================
+    // =================================================
     // DESCONEXÃO
-    // ==================================================
+    // =================================================
 
     socket.on("disconnect", (reason) => {
 
         console.log(
-            "Usuário desconectado:",
+            "Jogador desconectado:",
             socket.id,
-            "Motivo:",
             reason
         );
 
         players.delete(socket.id);
 
-        // Avisa todos que esse jogador saiu
         socket.broadcast.emit("playerLeft", {
             id: socket.id
         });
-
     });
-
 });
 
-// ======================================================
-// SERVIDOR
-// ======================================================
+// =====================================================
+// INICIAR SERVIDOR
+// =====================================================
 
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, "0.0.0.0", () => {
 
     console.log(
-        `Servidor multiplayer rodando na porta ${PORT}`
+        "Servidor rodando na porta " + PORT
     );
 
 });
